@@ -1,0 +1,393 @@
+/*
+ * IoT Smart Kitchen - Main Controller (ESP8266)
+ * 
+ * This code runs on the main ESP8266 controller and handles:
+ * - Receiving sensor data via ESP-NOW
+ * - Controlling fan speed via PWM
+ * - Managing servo valves for air circulation
+ * - Operating Peltier module for heating/cooling
+ * - OLED display for local monitoring
+ * - Blynk IoT integration for remote control
+ * 
+ * Author: Group 7 - IoT Smart Kitchen Team
+ * Date: June 2025
+ * Version: 1.0
+ */
+
+// Core Libraries
+#include <ESP8266WiFi.h>
+#include <espnow.h>
+#include <BlynkSimpleEsp8266.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Servo.h>
+
+// Pin Definitions
+#define FAN_PIN 14           // D5 - PWM pin for fan control
+#define FAN_TACH_PIN 12      // D6 - Fan tachometer input
+#define SERVO1_PIN 4         // D2 - Intake valve servo
+#define SERVO2_PIN 5         // D1 - Exhaust valve servo  
+#define SERVO3_PIN 16        // D0 - Circulation valve servo
+#define PELTIER_HOT_PIN 13   // D7 - Peltier heating relay
+#define PELTIER_COLD_PIN 15  // D8 - Peltier cooling relay
+#define BUZZER_PIN 2         // D4 - Gas alert buzzer
+#define LED_PIN 0            // D3 - Status LED
+
+// OLED Display Configuration
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Servo Objects
+Servo intakeServo;
+Servo exhaustServo; 
+Servo circulationServo;
+
+// WiFi Credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// Blynk Authentication
+char auth[] = "YOUR_BLYNK_AUTH_TOKEN";
+
+// System Variables
+struct SensorData {
+  float temperature;
+  float humidity;
+  int gasLevel;
+  unsigned long timestamp;
+};
+
+SensorData currentData;
+float targetTemperature = 25.0;
+int fanSpeed = 0;
+int fanRPM = 0;
+bool systemActive = true;
+bool gasAlert = false;
+
+// Control Parameters
+const float TEMP_MIN = 20.0;
+const float TEMP_MAX = 30.0;
+const int GAS_THRESHOLD = 200;
+const int FAN_MIN_SPEED = 100;
+const int FAN_MAX_SPEED = 255;
+
+// Timing Variables
+unsigned long lastDisplayUpdate = 0;
+unsigned long lastBlynkUpdate = 0;
+unsigned long lastFanTachRead = 0;
+const unsigned long DISPLAY_INTERVAL = 1000;
+const unsigned long BLYNK_INTERVAL = 2000;
+const unsigned long TACH_INTERVAL = 1000;
+
+// ESP-NOW Communication
+uint8_t sensorNodeMAC[] = {0x24, 0x6F, 0x28, 0xAE, 0xC5, 0x90}; // Update with actual MAC
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("IoT Smart Kitchen - Main Controller Starting...");
+  
+  // Initialize pins
+  pinMode(FAN_PIN, OUTPUT);
+  pinMode(FAN_TACH_PIN, INPUT);
+  pinMode(PELTIER_HOT_PIN, OUTPUT);
+  pinMode(PELTIER_COLD_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+  
+  // Initialize servos
+  intakeServo.attach(SERVO1_PIN);
+  exhaustServo.attach(SERVO2_PIN);
+  circulationServo.attach(SERVO3_PIN);
+  
+  // Set initial servo positions (closed)
+  intakeServo.write(0);
+  exhaustServo.write(0);
+  circulationServo.write(0);
+  
+  // Initialize OLED display
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("SSD1306 allocation failed");
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  
+  // Initialize WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  
+  display.setCursor(0, 0);
+  display.println("Connecting WiFi...");
+  display.display();
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  
+  // Initialize ESP-NOW
+  if (esp_now_init() != 0) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  
+  esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
+  esp_now_register_recv_cb(onDataReceive);
+  
+  // Initialize Blynk
+  Blynk.begin(auth, ssid, password);
+  
+  // Setup complete
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("System Ready!");
+  display.display();
+  
+  Serial.println("Setup complete - System ready!");
+}
+
+void loop() {
+  Blynk.run();
+  
+  // Update display
+  if (millis() - lastDisplayUpdate > DISPLAY_INTERVAL) {
+    updateDisplay();
+    lastDisplayUpdate = millis();
+  }
+  
+  // Update Blynk
+  if (millis() - lastBlynkUpdate > BLYNK_INTERVAL) {
+    updateBlynk();
+    lastBlynkUpdate = millis();
+  }
+  
+  // Read fan RPM
+  if (millis() - lastFanTachRead > TACH_INTERVAL) {
+    readFanRPM();
+    lastFanTachRead = millis();
+  }
+  
+  // Process temperature control
+  processTemperatureControl();
+  
+  // Check gas levels
+  checkGasLevels();
+  
+  // System status LED
+  digitalWrite(LED_PIN, systemActive ? HIGH : LOW);
+  
+  delay(100);
+}
+
+// ESP-NOW data receive callback
+void onDataReceive(uint8_t * mac, uint8_t *incomingData, uint8_t len) {
+  String receivedData = String((char*)incomingData);
+  Serial.println("Received: " + receivedData);
+  
+  // Parse received data: "temperature,humidity,gasLevel"
+  int firstComma = receivedData.indexOf(',');
+  int secondComma = receivedData.indexOf(',', firstComma + 1);
+  
+  if (firstComma != -1 && secondComma != -1) {
+    currentData.temperature = receivedData.substring(0, firstComma).toFloat();
+    currentData.humidity = receivedData.substring(firstComma + 1, secondComma).toFloat();
+    currentData.gasLevel = receivedData.substring(secondComma + 1).toInt();
+    currentData.timestamp = millis();
+    
+    Serial.printf("Parsed - Temp: %.1f°C, Humidity: %.1f%%, Gas: %d\n", 
+                  currentData.temperature, currentData.humidity, currentData.gasLevel);
+  }
+}
+
+void processTemperatureControl() {
+  if (currentData.timestamp == 0) return; // No data received yet
+  
+  float tempDiff = targetTemperature - currentData.temperature;
+  
+  // Fan control based on temperature
+  if (abs(tempDiff) > 0.5) {
+    if (tempDiff > 0) {
+      // Need heating
+      fanSpeed = map(abs(tempDiff), 0, 10, FAN_MIN_SPEED, FAN_MAX_SPEED);
+      digitalWrite(PELTIER_HOT_PIN, HIGH);
+      digitalWrite(PELTIER_COLD_PIN, LOW);
+    } else {
+      // Need cooling
+      fanSpeed = map(abs(tempDiff), 0, 10, FAN_MIN_SPEED, FAN_MAX_SPEED);
+      digitalWrite(PELTIER_HOT_PIN, LOW);
+      digitalWrite(PELTIER_COLD_PIN, HIGH);
+    }
+  } else {
+    // Temperature OK
+    fanSpeed = FAN_MIN_SPEED;
+    digitalWrite(PELTIER_HOT_PIN, LOW);
+    digitalWrite(PELTIER_COLD_PIN, LOW);
+  }
+  
+  // Apply fan speed
+  analogWrite(FAN_PIN, fanSpeed);
+  
+  // Servo valve control
+  controlValves(currentData.temperature);
+}
+
+void controlValves(float temperature) {
+  int servoAngle = 0;
+  
+  if (temperature < TEMP_MIN) {
+    // Cold - close all valves
+    servoAngle = 0;
+  } else if (temperature > TEMP_MAX) {
+    // Hot - open all valves fully
+    servoAngle = 90;
+  } else {
+    // Proportional control
+    servoAngle = map(temperature, TEMP_MIN, TEMP_MAX, 0, 90);
+  }
+  
+  intakeServo.write(servoAngle);
+  exhaustServo.write(servoAngle);
+  circulationServo.write(servoAngle);
+}
+
+void checkGasLevels() {
+  if (currentData.gasLevel > GAS_THRESHOLD) {
+    if (!gasAlert) {
+      gasAlert = true;
+      Serial.println("GAS ALERT!");
+      
+      // Sound buzzer
+      for (int i = 0; i < 5; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(200);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(200);
+      }
+      
+      // Open all valves for ventilation
+      intakeServo.write(90);
+      exhaustServo.write(90);
+      circulationServo.write(90);
+      
+      // Max fan speed
+      analogWrite(FAN_PIN, FAN_MAX_SPEED);
+    }
+  } else {
+    gasAlert = false;
+  }
+}
+
+void readFanRPM() {
+  // Simple RPM calculation based on tachometer pulses
+  static unsigned long lastPulse = 0;
+  static int pulseCount = 0;
+  
+  if (digitalRead(FAN_TACH_PIN) == HIGH && millis() - lastPulse > 10) {
+    pulseCount++;
+    lastPulse = millis();
+  }
+  
+  // Calculate RPM (assuming 2 pulses per revolution)
+  fanRPM = (pulseCount * 30); // Approximate calculation
+  pulseCount = 0;
+}
+
+void updateDisplay() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  
+  display.printf("Smart Kitchen v1.0\n");
+  display.printf("Temp: %.1fC (%.1fC)\n", currentData.temperature, targetTemperature);
+  display.printf("Humidity: %.1f%%\n", currentData.humidity);
+  display.printf("Gas: %d %s\n", currentData.gasLevel, gasAlert ? "ALERT!" : "OK");
+  display.printf("Fan: %d RPM\n", fanRPM);
+  display.printf("Status: %s\n", systemActive ? "ACTIVE" : "STANDBY");
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    display.printf("WiFi: Connected");
+  } else {
+    display.printf("WiFi: Disconnected");
+  }
+  
+  display.display();
+}
+
+void updateBlynk() {
+  if (Blynk.connected()) {
+    Blynk.virtualWrite(V0, currentData.temperature);
+    Blynk.virtualWrite(V1, currentData.humidity);
+    Blynk.virtualWrite(V2, currentData.gasLevel);
+    Blynk.virtualWrite(V3, fanRPM);
+    Blynk.virtualWrite(V4, fanSpeed);
+    Blynk.virtualWrite(V5, gasAlert ? 1 : 0);
+  }
+}
+
+// Blynk Virtual Pin Handlers
+BLYNK_WRITE(V10) {
+  targetTemperature = param.asFloat();
+  Serial.printf("Target temperature set to: %.1f°C\n", targetTemperature);
+}
+
+BLYNK_WRITE(V11) {
+  int manualFanSpeed = param.asInt();
+  if (manualFanSpeed >= 0 && manualFanSpeed <= 255) {
+    fanSpeed = manualFanSpeed;
+    analogWrite(FAN_PIN, fanSpeed);
+    Serial.printf("Manual fan speed: %d\n", fanSpeed);
+  }
+}
+
+BLYNK_WRITE(V12) {
+  int servoPos = param.asInt();
+  if (servoPos >= 0 && servoPos <= 90) {
+    intakeServo.write(servoPos);
+    Serial.printf("Intake servo position: %d\n", servoPos);
+  }
+}
+
+BLYNK_WRITE(V13) {
+  int servoPos = param.asInt();
+  if (servoPos >= 0 && servoPos <= 90) {
+    exhaustServo.write(servoPos);
+    Serial.printf("Exhaust servo position: %d\n", servoPos);
+  }
+}
+
+BLYNK_WRITE(V14) {
+  int servoPos = param.asInt();
+  if (servoPos >= 0 && servoPos <= 90) {
+    circulationServo.write(servoPos);
+    Serial.printf("Circulation servo position: %d\n", servoPos);
+  }
+}
+
+BLYNK_WRITE(V15) {
+  systemActive = param.asInt();
+  if (systemActive) {
+    Serial.println("System activated");
+  } else {
+    Serial.println("System deactivated");
+    analogWrite(FAN_PIN, 0);
+    intakeServo.write(0);
+    exhaustServo.write(0);
+    circulationServo.write(0);
+    digitalWrite(PELTIER_HOT_PIN, LOW);
+    digitalWrite(PELTIER_COLD_PIN, LOW);
+  }
+}
+
+// System reset function
+BLYNK_WRITE(V16) {
+  if (param.asInt()) {
+    Serial.println("System reset requested");
+    ESP.restart();
+  }
+}
