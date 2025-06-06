@@ -17,6 +17,23 @@ An intelligent IoT-based kitchen monitoring and control system that automaticall
 - **Safety Alerts**: Gas detection with buzzer and LED warnings
 - **Peltier Module**: Heating and cooling capabilities
 
+🏗️ System Architecture
+┌─────────────────┐    ESP-NOW    ┌──────────────────┐
+│   Sensor ESP32  │◄──────────────►│  Main ESP8266    │
+│   (XIAO)        │                │  Controller      │
+│                 │                │                  │
+│ • DHT11         │                │ • Fan Control    │
+│ • MQ-2 Gas      │                │ • Servo Valves   │
+│ • SD Card       │                │ • Peltier Module │
+└─────────────────┘                │ • OLED Display   │
+                                   └──────────────────┘
+                                            │
+                                            │ WiFi
+                                            ▼
+                                   ┌──────────────────┐
+                                   │   Blynk Cloud    │
+                                   │   IoT Platform   │
+                                   └──────────────────┘
 ## 🛠️ Hardware Components
 
 ### Core Components
