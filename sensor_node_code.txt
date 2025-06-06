@@ -1,0 +1,99 @@
+/*
+ * IoT Smart Kitchen - Sensor Node (XIAO ESP32-S3)
+ * 
+ * This code runs on the XIAO ESP32-S3 sensor node and handles:
+ * - Reading DHT11 temperature and humidity sensor
+ * - Reading MQ-2 gas sensor
+ * - Data logging to SD card with timestamps
+ * - Transmitting sensor data via ESP-NOW
+ * - NTP time synchronization
+ * 
+ * Author: Group 7 - IoT Smart Kitchen Team
+ * Date: June 2025
+ * Version: 1.0
+ */
+
+// Core Libraries
+#include <WiFi.h>
+#include <esp_now.h>
+#include <DHT.h>
+#include <SD.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <time.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// Pin Definitions
+#define DHT_PIN 2           // DHT11 data pin
+#define DHT_TYPE DHT11      // DHT sensor type
+#define GAS_SENSOR_PIN A0   // MQ-2 analog pin
+#define SD_CS_PIN 10        // SD card chip select
+#define LED_PIN 13          // Status LED
+
+// OLED Display Configuration (Optional - for debugging)
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Sensor Objects
+DHT dht(DHT_PIN, DHT_TYPE);
+
+// WiFi Credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// NTP Server Configuration
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 0;           // GMT offset in seconds
+const int daylightOffset_sec = 3600;   // Daylight saving offset
+
+// ESP-NOW Configuration
+uint8_t mainControllerMAC[] = {0x84, 0xCC, 0xA8, 0x7A, 0x8B, 0x3C}; // Main controller MAC
+
+// Data Logging Configuration
+const unsigned long LOG_INTERVAL = 5000;  // Log every 5 seconds
+const unsigned long SEND_INTERVAL = 2000; // Send every 2 seconds
+
+// System Variables
+struct SensorReading {
+  float temperature;
+  float humidity;
+  int gasLevel;
+  String timestamp;
+};
+
+SensorReading currentReading;
+unsigned long lastLogTime = 0;
+unsigned long lastSendTime = 0;
+bool sdCardAvailable = false;
+bool displayAvailable = false;
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("IoT Smart Kitchen - Sensor Node Starting...");
+  
+  // Initialize pins
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH); // Indicate startup
+  
+  // Initialize DHT sensor
+  dht.begin();
+  Serial.println("DHT11 sensor initialized");
+  
+  // Initialize OLED display (optional)
+  if(display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    displayAvailable = true;
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("Sensor Node v1.0");
+    display.println("Initializing...");
+    display.display();
+    Serial.println("OLED display initialized");
+  }
+  
+  // Initialize SD card
+  if (SD.begin(SD_CS_PIN
