@@ -247,11 +247,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 👥 Authors
 
 **Group 7 - Connected Systems and IoT**
-- **Mit Vinubhai Sabhadiya** (22083888) - Project Lead, ESP32 Communication, MATLAB Integration
-- **Mestiyage Gunathilake** (21052393) - Arduino Development, System Overview, Blynk Dashboard
-- **Shah Muhammad** (22068357) - DHT11 Implementation, Fan Control
-- **Oluwatmide Omojayogbe** (23011524) - SD Card Module, Circuit Design
-- **Naman Sharma** (22098594) - Servo Calibration, Testing, Implementation
+- **Mit Vinubhai Sabhadiya** - Project Lead, ESP32 Communication, MATLAB Integration
+- **Mestiyage Gunathilake** - Arduino Development, System Overview, Blynk Dashboard
+- **Shah Muhammad** - DHT11 Implementation, Fan Control
+- **Oluwatmide Omojayogbe** - SD Card Module, Circuit Design
+- **Naman Sharma** - Servo Calibration, Testing, Implementation
 
 ## 🙏 Acknowledgments
 
